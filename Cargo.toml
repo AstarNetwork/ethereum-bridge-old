@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "eth-types",
+]
+	
+[profile.release]
+# Plasm runtime requires unwinding.
+panic = "unwind"

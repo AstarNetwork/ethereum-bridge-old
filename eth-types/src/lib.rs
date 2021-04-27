@@ -20,8 +20,8 @@ pub use utils::hex_bytes_unchecked;
 pub use ethbloom::{Bloom, Input as BloomInput};
 pub use ethereum_types::H64;
 pub use primitive_types::{H160, H256, U128, U256, U512};
-pub use receipt::EthereumReceipt;
-
+pub use receipt::{EthereumReceipt, EthereumReceiptProof};
+pub use keccak_hash::keccak;
 use codec::{Decode, Encode};
 use sp_std::prelude::*;
 

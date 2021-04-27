@@ -4,19 +4,18 @@
 use sp_std::prelude::*;
 use sp_std::vec::Vec;
 use codec::{Encode, Decode};
-use frame_support::{traits::Get, ensure, decl_error, decl_event, decl_module, decl_storage};
-use frame_system::{self as system, ensure_signed, ensure_root};
-use sp_runtime::{
-    RuntimeDebug, DispatchResult,
-};
+use frame_support::{traits::Get, dispatch::DispatchResult,
+     ensure, decl_error, decl_event, decl_module, decl_storage};
+use frame_system::{ensure_signed, ensure_root};
+use sp_runtime::RuntimeDebug;
 use eth_primitives::{
     header::EthereumHeader,
     pow::{EthashPartial, EthashSeal},
     network_type::EthereumNetworkType,
     EthereumBlockNumber, H256, U256,
-    EthereumReceipt
+    EthereumReceipt, EthereumReceiptProof
 };
-
+use eth_primitives::keccak;
 
 #[derive(Default, Encode, Decode, RuntimeDebug, Clone)]
 pub struct HeaderChainLatest {
@@ -46,15 +45,13 @@ decl_error! {
 	    /// header.hash does not match the calculated one
         HeaderHashMismatch,
         /// Genesis header does not exist
-        HeaderChainNE,
+        GenesisHeaderNE,
         /// Too early
         TooEarly,
         /// Too late
         TooLate,
         /// prev header does not exist
         PrevHeaderNE,
-        /// header.number does not equal prev_number + 1
-        BlockNumberMismatch,
         /// verify_block_basic verification failed
         BlockBasicVF,
         /// Difficulty verification failed
@@ -71,6 +68,10 @@ decl_error! {
         AuthBestNumberUF,
         /// Header does not exist
         HeaderNE,
+        /// No Finalized header
+        FinalizedHeaderNE,
+        /// receipt verification fail
+        ReceiptVF,
 
 	}
 }
@@ -93,7 +94,7 @@ decl_storage! {
         pub AuthBestNumber get(fn auth_best_number): EthereumBlockNumber;
 
         /// Detailed info of a header(Hash)
-        pub Header get(fn header): map hasher(identity) H256 => Option<EthereumHeader>;
+        pub Header get(fn header): map hasher(twox_64_concat) EthereumBlockNumber => Option<EthereumHeader>;
 
         /// header chain
         pub HeaderChain get(fn header_chain): Option<HeaderChainLatest>;
@@ -105,6 +106,8 @@ decl_storage! {
 decl_module! {
     pub struct Module<T: Config> for enum Call where origin: T::Origin {
         fn deposit_event() = default;
+
+        type Error = Error<T>;
 
         #[weight = 0]
         fn maintain_header_chain(origin, header: EthereumHeader) -> DispatchResult {
@@ -142,14 +145,27 @@ decl_module! {
         fn verify_receipt(
             origin, 
             eth_block_number: EthereumBlockNumber,
+            proof: EthereumReceiptProof,
             receipt: EthereumReceipt
-        ) {
-            /// TODO: maintain a set of authorities
+        ) -> DispatchResult {
+            // TODO: maintain a set of authorities
             let who = ensure_signed(origin)?;
+            // make sure the eth block is finalized
+            let latest_finalized_header = Self::header_chain().ok_or(Error::<T>::FinalizedHeaderNE)?;
+            let finalized_block_number = latest_finalized_header.number;
+            ensure!(eth_block_number <= finalized_block_number, Error::<T>::TooEarly);
+            // get block header
+            let block_header = Self::header(&eth_block_number).ok_or(Error::<T>::HeaderNE)?;
 
-            // TODO
+            let expected_receipt = EthereumReceipt::verify_proof_and_generate(
+                &block_header.receipts_root,
+                &proof
+            ).map_err(|_| Error::<T>::ReceiptVF)?;
+            // ensure we get the right receipt
+            ensure!(expected_receipt == receipt, Error::<T>::ReceiptVF);
 
-            
+            // TODO: do something 
+            Ok(())
         }
     }
 }
@@ -168,17 +184,17 @@ impl<T: Config> Module<T> {
         );
         let genesis_header = Self::genesis_header()
             .ok_or(())
-            .map_err(|_| Error::<T>::HeaderChainNE)?
+            .map_err(|_| Error::<T>::GenesisHeaderNE)?
             .number;
         ensure!(header.number >= genesis_header, Error::<T>::TooEarly);
         log::trace!(target: "verify_header_basic", "Head Number OK");
 
         // make sure the prev header exist
-        let prev_header = Self::header(header.parent_hash).ok_or(<Error<T>>::PrevHeaderNE)?;
+        let prev_header = Self::header(header.number - 1).ok_or(<Error<T>>::PrevHeaderNE)?;
 
         ensure!(
-			header.number == prev_header.number + 1,
-			<Error<T>>::BlockNumberMismatch
+			header.parent_hash == prev_header.hash(),
+			<Error<T>>::HeaderHashMismatch
 		);
 
         Ok(())
@@ -192,7 +208,7 @@ impl<T: Config> Module<T> {
             .verify_block_basic(header)
             .map_err(|_| <Error<T>>::BlockBasicVF)?;
         log::trace!(target: "verify_block_basic", "PASS");
-        let prev_header = Self::header(header.parent_hash).ok_or(<Error<T>>::HeaderNE)?;
+        let prev_header = Self::header(header.number - 1).ok_or(<Error<T>>::HeaderNE)?;
         let difficulty = ethash_params.calculate_difficulty(header, &prev_header);
         ensure!(difficulty == *header.difficulty(), <Error<T>>::DifficultyVF);
         log::trace!(target: "check_difficulty", "PASS");
@@ -224,7 +240,7 @@ impl<T: Config> Module<T> {
                 .map_err(|_| Error::<T>::TooEarly)?, Error::<T>::TooEarly
         );
         // add header
-        Header::insert(header.hash(), header);
+        Header::insert(&number, header);
         HeaderChain::try_mutate(|header_chain| -> DispatchResult {
             let mut headers = header_chain.take().unwrap_or_default();
             headers.parent_hash = *header.parent_hash();

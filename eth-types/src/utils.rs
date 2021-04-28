@@ -1,6 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use sp_std::prelude::*;
+use sp_std::vec;
+
 #[macro_export]
 macro_rules! fixed_hex_bytes_unchecked {
 	($str:expr, $len:expr) => {{

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "eth-types",
+    "EBRL/eth-light-client",
 ]
 	
 [profile.release]
